@@ -14,6 +14,7 @@ from collections import defaultdict
 from emoji import is_emoji
 from html2text import HTML2Text
 from PIL import Image
+from tgdump import TgDumpParser
 from wordcloud import WordCloud, STOPWORDS, ImageColorGenerator
 
 """
@@ -116,194 +117,6 @@ text->join+extract "text" from the dicts -> text
 }
 
 """
-
-href_re = re.compile(r"<a href.*?>(.*?)</a>")
-
-class TgJsonParser(object):
-    """
-    Returns a dict of messages similar to TgDumpParser
-
-    from -> from_name
-    id -> id
-    date_unixtime -> timestamp
-    reply_to_message_id -> reply_to
-    text_entities->type:mention->text -> mentions
-    text->join+extract "text" from the dicts -> text
-    ??? -> message_links
-    ??? -> media
-    """
-
-    def __init__(self, filename="result.json"):
-        self.filename = filename
-
-    def parse(self):
-        with open(self.filename, "r") as JSON:
-            data = json.load(JSON)
-        if "messages" not in data:
-            raise Exception("Unable to load json data from {}".format(self.filename))
-        messages = {}
-        for message in data["messages"]:
-            if "action" in message:
-                continue
-            msg = {
-                "id": None,
-                "from_name": None,
-                "timestamp": None,
-                "text": "",
-                "message_links": [],
-                "mentions": [],
-                "media": "",
-                "reply_to": ""
-            }
-            msg["id"] = message["id"]
-            msg["timestamp"] = int(message["date_unixtime"])
-            if "from" in message:
-                msg["from_name"] = message["from"]
-            else:
-                print(message)
-            if "reply_to_message_id" in message:
-                msg["reply_to"] = [message["reply_to_message_id"]]
-            if "media_type" in message:
-                msg["media"] = message["media_type"]
-            text = []
-            if isinstance(message["text"], str):
-                text = [message["text"]]
-            else:
-                for entry in message["text"]:
-                    if isinstance(entry, dict):
-                        text.append(entry["text"])
-                        if "mention" in entry["type"]:
-                            msg["mentions"].append(entry["text"])
-                    else:
-                        text.append(entry)
-            msg["text"] = " ".join(text)
-            
-
-            messages[msg["id"]] = msg
-        return messages
-
-
-class TgDumpParser(object):
-    div_re = re.compile(r'(\w+)="(.*?)"')
-    message_link_re = re.compile(r'onclick="return GoToMessage\((.*)\)"')
-    mention_re = re.compile(r'ShowMentionName\(\)">(.*)</a>')
-
-    def __init__(self, directory=None):
-        self.dump_dir = directory
-        self.html_parser = HTML2Text()
-
-    def parse(self, dump_dir=None):
-        dump_dir = dump_dir or self.dump_dir
-        if not dump_dir:
-            return {}
-        messages = {}
-        for filename in os.listdir(dump_dir):
-            if filename.startswith("messages") and filename.endswith(".html"):
-                with open(os.path.join(dump_dir, filename), "r") as MESSAGES:
-                    messages.update(self.parse_messages(MESSAGES.readlines()))
-        return messages
-
-    def parse_div_line(self, line):
-        if not line:
-            return {}
-        matches = self.div_re.findall(line)
-        return dict(matches)
-
-    def post_process(self, msg):
-        if msg["reply_to"]:
-            matches = self.message_link_re.findall(msg["reply_to"])
-            msg["reply_to"] = list(matches)
-        else:
-            msg["reply_to"] = []
-        if msg["text"]:
-            self.html_parser.reset()
-            msg["text"] = msg["text"].strip()
-            if '<a href="#go_to_message' in msg["text"]:
-                matches = self.message_link_re.findall(msg["text"])
-                msg["message_links"] = list(matches)
-            if "ShowMentionName" in msg["text"]:
-                matches = self.mention_re.findall(msg["text"])
-                msg["mentions"] = list(matches)
-            msg["text"] = href_re.sub("\g<1>", msg["text"])
-            self.html_parser.feed(msg["text"])
-            try:
-                msg["text"] = self.html_parser.finish().strip()
-            except Exception as e:
-                print("Unable to parse html {}".format(e))
-        return msg
-
-    def parse_messages(self, lines):
-        messages = {}
-
-        # eat everything before the html body
-        while '<div class="body">' not in lines[0]:
-            lines.pop(0)
-
-        msg = {
-            "id": None,
-            "from_name": None,
-            "timestamp": None,
-            "text": "",
-            "message_links": [],
-            "mentions": [],
-            "media": "",
-            "reply_to": ""
-        }
-
-        # use 'target' to track what field we want to fill in with subsequent lines
-        target = None
-
-        for line in lines:
-            if "</div" in line:
-                target = None
-            elif "<div" in line:
-                div = self.parse_div_line(line)
-                target = None
-                if div["class"].startswith("message default clearfix"):
-                    # new message.  if we were building an old message, save it.
-                    if msg["id"]:
-                        messages[msg["id"]] = self.post_process(msg)
-                    from_name = None
-                    if div["class"].endswith("joined"):
-                        # class "message default clearfix joined" inherits
-                        # from_name from the preceding message
-                        from_name = msg["from_name"]
-                    msg = {
-                        "from_name": from_name,
-                        "timestamp": None,
-                        "text": "",
-                        "message_links": [],
-                        "mentions": [],
-                        "media": "",
-                        "reply_to": ""
-                    }
-                    msg["id"] = div["id"].replace("message","")
-                elif div["class"] == "from_name":
-                    target = "from_name"
-                elif div["class"] == "text":
-                    target = "text"
-                elif div["class"] == "pull_right date details":
-                    msg["timestamp"] = div["title"]
-                    try:
-                        msg["timestamp"] = time.mktime(time.strptime(msg["timestamp"], '%d.%m.%Y %H:%M:%S UTC%z'))
-                    except:
-                        pass
-                elif div["class"] == "media_wrap clearfix":
-                    target = "media"
-                elif div["class"] == "reply_to details":
-                    target = "reply_to"
-            elif target is not None:
-                if target == "from_name":
-                    try:
-                        msg[target] = html.unescape(line.strip())
-                    except:
-                        msg[target] = line.strip()
-                    target = None
-                else:
-                    msg[target] = msg[target] + line
-
-        messages[msg["id"]] = msg
-        return messages
 
 
 def top_n(dct, n):
@@ -488,7 +301,7 @@ def main():
         with open(args.pickle, "rb") as IMAPICKLEMORTY:
             messages = pickle.load(IMAPICKLEMORTY)
     elif args.json:
-        messages.update(TgJsonParser(args.json).parse())
+        messages.update(TgDumpParser(args.json)())
     else:
         if args.directories:
             directories = args.directories
@@ -496,7 +309,7 @@ def main():
             directories = [args.directory]
 
         for directory in directories:
-            messages.update(TgDumpParser(directory=directory).parse())
+            messages.update(TgDumpParser(directory=directory)())
 
     if args.write_pickle:
         with open(args.write_pickle, "wb") as IMAPICKLEMORTY:
