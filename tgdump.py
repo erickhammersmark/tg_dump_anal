@@ -6,12 +6,26 @@ import os
 import re
 import sys
 
-from collections import defaultdict
-from emoji import is_emoji
+from html2text import HTML2Text
 
 """
-Accepts a path to messages.json or a path to a Telegram dump of HTML message files.
-Returns a dict of messages keyed on message id. For example:
+TgDumpParser accepts a path to a single JSON file or a path to a directory
+containing a Telegram dump of HTML message files.  Calling the instance
+returns a dict of messages keyed on message id. For example:
+
+{
+    id: str: {
+        from_name: str,
+        timestamp: float,
+        text: str,
+        message_links: [str],
+        mentions: [str],
+        media: str,
+        reply_to: [str],
+        id: str
+    }
+}
+
 {
     "363180": {
         'from_name': 'c0ldbru',
@@ -24,109 +38,26 @@ Returns a dict of messages keyed on message id. For example:
         'id': '363180'
     }
 }
-"""
-
 
 """
-{'from_name': 'c0ldbru',
- 'timestamp': 1660682202.0,
- 'text': 'really we just want to get <a href="https://t.me/pubkraal">@pubkraal</a> on there drinking with us again, and get <a href="" onclick="return ShowMentionName()">b1n/&lt;</a> onto our car this next time',
- 'message_links': [],
- 'mentions': ['b1n/&lt;'],
- 'media': '',
- 'reply_to': ['363176'],
- 'id': '363180'
-}
 
-from -> from_name
-id -> id
-date_unixtime -> timestamp
-reply_to_message_id -> reply_to
-text_entities->type:mention->text -> mentions
-text->join+extract "text" from the dicts -> text
-??? -> message_links
-??? -> media
+href_re = re.compile(r"<a href.*?>(.*?)</a>")
 
- {
-   "id": 363180,
-   "type": "message",
-   "date": "2022-08-16T13:36:42",
-   "date_unixtime": "1660682202",
-   "from": "c0ldbru",
-   "from_id": "user1927162607",
-   "reply_to_message_id": 363176,
-   "text": [
-    "really we just want to get ",
-    {
-     "type": "mention",
-     "text": "@pubkraal"
-    },
-    " on there drinking with us again, and get ",
-    {
-     "type": "mention_name",
-     "text": "b1n/<",
-     "user_id": 1898901504
-    },
-    " onto our car this next time"
-   ],
-   "text_entities": [
-    {
-     "type": "plain",
-     "text": "really we just want to get "
-    },
-    {
-     "type": "mention",
-     "text": "@pubkraal"
-    },
-    {
-     "type": "plain",
-     "text": " on there drinking with us again, and get "
-    },
-    {
-     "type": "mention_name",
-     "text": "b1n/<",
-     "user_id": 1898901504
-    },
-    {
-     "type": "plain",
-     "text": " onto our car this next time"
-    }
-   ]
-  },
+class TgDump(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(self, *args, **kwargs)
+        self.from_cache = {}
 
+    def has_link(self, _id):
+        if _id not in self:
+            return False
+        msg = self[_id]
+        return len(msg["links"]) != 0
 
-{'from_name': 'c0ldbru',
- 'timestamp': 1660849435.0,
- 'text': 'also,
- <a href="" onclick="return ShowMentionName()">Skyehopper</a> I seriously cannot get over how rad that art you made was. seriously thank you so much for bringing those!!',
- 'message_links': [],
- 'mentions': ['Skyehopper'],
- 'media': '',
- 'reply_to': [],
- 'id': '364602'
-}
-
-{'from_name': 'c0ldbru',
- 'timestamp': 1660875138.0,
- 'text': 'lol oh it was so much better than the poop knife. You could tell that some people in the audience were absolutely not prepared for the glorious talk that <a href="" onclick="return ShowMentionName()">J9</a> was about to give',
- 'message_links': [],
- 'mentions': ['J9'],
- 'media': '',
- 'reply_to': [],
- 'id': '364881'
-}
-
-{'from_name': 'Nikolaevarius',
- 'timestamp': 1661007457.0,
- 'text': '<a href="" onclick="return ShowMentionName()">null_exception</a> you start skipping meals and sleep yet',
- 'message_links': [],
- 'mentions': ['null_exception'],
- 'media': '',
- 'reply_to': [],
- 'id': '365353'
-}
-
-"""
+    def allfrom(self, from_name):
+        if from_name not in self.from_cache:
+            self.from_cache[from_name] = (msg for msg in self.values() if msg["from_name"] == from_name)
+        return self.from_cache[from_name]
 
 class TgJsonParser(object):
     """
@@ -153,16 +84,19 @@ class TgJsonParser(object):
             data = json.load(JSON)
         if "messages" not in data:
             raise Exception("Unable to load json data from {}".format(self.filename))
-        messages = {}
+        messages = TgDump()
+        actions = []
         for message in data["messages"]:
             if "action" in message:
-                continue
+                actions.append(message)
             msg = {
                 "id": None,
                 "from_name": None,
+                "from_id": None,
                 "timestamp": None,
                 "text": "",
                 "message_links": [],
+                "links": [],
                 "mentions": [],
                 "media": "",
                 "reply_to": ""
@@ -171,6 +105,8 @@ class TgJsonParser(object):
             msg["timestamp"] = int(message["date_unixtime"])
             if "from" in message:
                 msg["from_name"] = message["from"]
+            if "from_id" in message:
+                msg["from_id"] = message["from_id"]
             if "reply_to_message_id" in message:
                 msg["reply_to"] = [message["reply_to_message_id"]]
             if "media_type" in message:
@@ -184,22 +120,29 @@ class TgJsonParser(object):
                         text.append(entry["text"])
                         if "mention" in entry["type"]:
                             msg["mentions"].append(entry["text"])
+                        if "link" in entry["type"]:
+                            msg["links"].append(entry["text"])
                     else:
                         text.append(entry)
             msg["text"] = " ".join(text)
 
             messages[msg["id"]] = msg
         self.messages = messages
-        return messages
+        return (messages, actions)
+
+"""
+In reply to <a href="#go_to_message286750" onclick="return GoToMessage(286750)">this message</a>\n', 'id': '286751'}
+"""
 
 
 class TgHtmlParser(object):
     div_re = re.compile(r'(\w+)="(.*?)"')
-    message_link_re = re.compile(r'onclick="return GoToMessage\((.*)\)"')
-    mention_re = re.compile(r'ShowMentionName\(\)">(.*)</a>')
+    message_link_re = re.compile(r'onclick="return GoToMessage\((.*?)\)"')
+    mention_re = re.compile(r'ShowMentionName\(\)">(.*?)</a>')
 
     def __init__(self, directory):
         self.dump_dir = directory
+        self.html_parser = HTML2Text()
 
     def __call__(self):
         return self.parse()
@@ -236,6 +179,12 @@ class TgHtmlParser(object):
             if "ShowMentionName" in msg["text"]:
                 matches = self.mention_re.findall(msg["text"])
                 msg["mentions"] = list(matches)
+            msg["text"] = href_re.sub("\g<1>", msg["text"])
+            self.html_parser.feed(msg["text"])
+            try:
+                msg["text"] = self.html_parser.finish().strip()
+            except Exception as e:
+                print("Unable to parse html {}".format(e))
         return msg
 
     def parse_messages(self, lines):
@@ -308,7 +257,8 @@ class TgHtmlParser(object):
                 else:
                     msg[target] = msg[target] + line
 
-        messages[msg["id"]] = msg
+        if msg["id"]:
+            messages[msg["id"]] = self.post_process(msg)
         return messages
 
 class TgDumpParser(object):
@@ -323,5 +273,5 @@ class TgDumpParser(object):
         return self.parser()
 
 if __name__ == "__main__":
-    parser = TgDumpParser("/home/bink/result.json")
+    parser = TgDumpParser(sys.argv[1])
     print(len(parser()))

@@ -6,8 +6,8 @@ from html.parser import HTMLParser
 class MemberParser(HTMLParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.members = {}
-        self.member = {}
+        self.members = set()
+        self.name_next = False
 
     def handle_starttag(self, tag, attrs):
         try:
@@ -18,22 +18,30 @@ class MemberParser(HTMLParser):
                 if len(item) == 2:
                     _attrs[item[0]] = item[1]
 
-        print("start", tag, _attrs)
+        if "class" not in _attrs:
+            return
+
+        if _attrs["class"] == "peer-title":
+            self.name_next = True
+        else:
+            self.name_next = False
 
     def handle_endtag(self, tag):
-        print("end", tag)
+        #print("end", tag)
         pass
 
     def handle_data(self, data):
-        print("data", data)
-        pass
+        if self.name_next:
+            self.members.add(data)
 
 parser = MemberParser()
 
 with open(sys.argv[1], "r") as MBR:
   while parser.feed(MBR.read()):
     pass
-
+for member in parser.members:
+    print(member)
+#print(parser.members)
 
 
 
