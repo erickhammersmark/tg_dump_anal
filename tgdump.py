@@ -41,12 +41,75 @@ returns a dict of messages keyed on message id. For example:
 
 """
 
-href_re = re.compile(r"<a href.*?>(.*?)</a>")
-
 class TgDump(dict):
     def __init__(self, *args, **kwargs):
-        super().__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.from_cache = {}
+        self.id_map = {}
+
+    def has_link(self, _id):
+        if _id not in self:
+            return False
+        msg = self[_id]
+        return len(msg["links"]) != 0
+
+    def allfrom(self, from_name):
+        if from_name not in self.from_cache:
+            self.from_cache[from_name] = (msg for msg in self.values() if msg["from_name"] == from_name)
+        return self.from_cache[from_name]
+
+    def isnull(self, value):
+        # the use case here is figuring out if one dump or another has a better value
+        # so it should be fine to call 0 (or other type defaults) "null", as a non-default
+        # value should always be preferable.
+        if not value:
+            return True
+        if value in ["null", "Null", "NULL", "none", "None", "NONE"]:
+            return True
+        return False
+
+    def merge(self, other_tgdump):
+        """
+        merge another tg dump into this one.
+        only add data, do not lose anything.
+        call this on an older dump with a newer one as its argument.
+        when in doubt, new dump wins.
+        """
+        for msg_id, msg in other_tgdump.items():
+            if msg_id not in self:
+                self[msg_id] = msg
+                continue
+            for field, value in msg.items():
+                if field not in self[msg_id]:
+                    self[msg_id][field] = value
+                    continue
+                if self.isnull(value):
+                    continue
+                if self.isnull(self[msg_id][field]):
+                    self[msg_id][field] = value
+                else:
+                    if self[msg_id][field] == value:
+                        continue
+                    if field == "from_name":
+                        # always take an updated from_name, this needs to be consistent for the reports
+                        self[msg_id]["from_name"] = value
+                    else:
+                        raise Exception(f"Message id {msg_id} has conflicting values for field {field}. Ours is {self[msg_id][field]}, other is {value}")
+        self.normalize_from_name()
+
+    def normalize_from_name(self):
+        new_id_map = {}
+        msg_ids = list(self.keys())
+        msg_ids.sort(key=lambda x: 0 - x)
+        for msg_id in msg_ids:
+            msg = self[msg_id]
+            if "from_id" not in msg:
+                continue
+            if msg["from_id"] not in new_id_map:
+                new_id_map[msg["from_id"]] = msg["from_name"]
+            else:
+                msg["from_name"] = new_id_map[msg["from_id"]]
+        self.id_map = new_id_map
 
     def has_link(self, _id):
         if _id not in self:
@@ -71,6 +134,10 @@ class TgJsonParser(object):
     text->join+extract "text" from the dicts -> text
     ??? -> message_links
     ??? -> media
+
+    The HTML dumps do not contain the from_id field, only from_name, but
+    the message IDs are consistent. Dumps can be merged by messsage ID.
+    I think.
     """
 
     def __init__(self, filename):
@@ -128,6 +195,7 @@ class TgJsonParser(object):
 
             messages[msg["id"]] = msg
         self.messages = messages
+        self.messages.normalize_from_name()
         return (messages, actions)
 
 """
@@ -139,6 +207,7 @@ class TgHtmlParser(object):
     div_re = re.compile(r'(\w+)="(.*?)"')
     message_link_re = re.compile(r'onclick="return GoToMessage\((.*?)\)"')
     mention_re = re.compile(r'ShowMentionName\(\)">(.*?)</a>')
+    href_re = re.compile(r"<a href.*?>(.*?)</a>")
 
     def __init__(self, directory):
         self.dump_dir = directory
@@ -179,7 +248,7 @@ class TgHtmlParser(object):
             if "ShowMentionName" in msg["text"]:
                 matches = self.mention_re.findall(msg["text"])
                 msg["mentions"] = list(matches)
-            msg["text"] = href_re.sub("\g<1>", msg["text"])
+            msg["text"] = self.href_re.sub("\g<1>", msg["text"])
             self.html_parser.feed(msg["text"])
             try:
                 msg["text"] = self.html_parser.finish().strip()

@@ -353,7 +353,7 @@ def tg_nevertalkers(messages, actions):
     for silent_joiner in joined_no_messages:
         print("Name: {}, ID: {}, last joined: {}".format(silent_joiner["actor"], silent_joiner["actor_id"], silent_joiner["date_unixtime"]))
 
-def date(thedate):
+def mk_epochtime(thedate):
     if date_re.match(thedate):
         return datetime.strptime(thedate, "%Y-%m-%d").timestamp()
     return int(thedate)
@@ -361,16 +361,15 @@ def date(thedate):
 def parse_args():
     parser = argparse.ArgumentParser()
     source = parser.add_mutually_exclusive_group()
-    source.add_argument("--json", default=None, help="json dump of tg chat")
-    source.add_argument("--directory", default=".", help="directory containing message*.html")
-    source.add_argument("--directories", default=None, help="specify multiple telegram chat export directories")
+    source.add_argument("--json", default=[], nargs="+", help="One or more JSON formatted Telegram exports")
+    source.add_argument("--directory", default=[], nargs="+", help="One or more directories containing HTML formatted Telegram exports")
     source.add_argument("--pickle", default=None, help="pickle file containing parsed messages")
     parser.add_argument("--write-pickle", default=None, help="specify a filename to write parsed messages to a pickle file")
     parser.add_argument("--report", default=False, action="store_true", help="print report")
     parser.add_argument("--perday", default=False, action="store_true", help="print data about talkers per day")
     parser.add_argument("--topn", default=20, type=int, help="Count of topN lists in report")
-    parser.add_argument("--not_before", default=None, help="unix timestamp of earliest desired message (or YYYY-MM-DD)", type=date)
-    parser.add_argument("--not_after", default=None, help="unix timestamp of latest desired message (or YYYY-MM-DD)", type=date)
+    parser.add_argument("--not_before", default=None, help="epoch timestamp of earliest desired message (or YYYY-MM-DD)", type=mk_epochtime)
+    parser.add_argument("--not_after", default=None, help="epoch timestamp of latest desired message (or YYYY-MM-DD)", type=mk_epochtime)
     parser.add_argument("--dump", default=False, action="store_true", help="dump all messages to console")
     parser.add_argument("--dumpjson", default=False, action="store_true", help="dump messages in json format")
     parser.add_argument("--search", default=None, help="search regex for message dump")
@@ -392,17 +391,15 @@ def main():
         with open(args.pickle, "rb") as IMAPICKLEMORTY:
             messages = pickle.load(IMAPICKLEMORTY)
     elif args.json:
-        _messages, actions = TgDumpParser(args.json)()
-        messages.update(_messages)
-    else:
-        if args.directories:
-            directories = args.directories
-        else:
-            directories = [args.directory]
-
-        for directory in directories:
+        for json_file in args.json:
+            _messages, actions = TgDumpParser(json_file)()
+            messages.update(_messages)
+    elif args.directory:
+        for directory in args.directory:
             _messages, actions = TgDumpParser(directory)()
             messages.update(_messages)
+    else:
+        raise Exception("No data. Please specify one of: --pickle, --json, --directory")
 
     if args.write_pickle:
         with open(args.write_pickle, "wb") as IMAPICKLEMORTY:
