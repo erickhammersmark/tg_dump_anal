@@ -361,8 +361,7 @@ def mk_epochtime(thedate):
 def parse_args():
     parser = argparse.ArgumentParser()
     source = parser.add_mutually_exclusive_group()
-    source.add_argument("--json", default=[], nargs="+", help="One or more JSON formatted Telegram exports")
-    source.add_argument("--directory", default=[], nargs="+", help="One or more directories containing HTML formatted Telegram exports")
+    source.add_argument("--sources", default=[], nargs="+", help="One or more Telegram exports, either JSON results files or directories of HTML files")
     source.add_argument("--pickle", default=None, help="pickle file containing parsed messages")
     parser.add_argument("--write-pickle", default=None, help="specify a filename to write parsed messages to a pickle file")
     parser.add_argument("--report", default=False, action="store_true", help="print report")
@@ -385,21 +384,39 @@ def parse_args():
 
 def main():
     args = parse_args()
+    dumps = []
     messages = TgDump()
     actions = []
+
+    if not args.pickle and not args.sources:
+        raise Exception("No data. Please specify one of: --pickle, --sources")
+
     if args.pickle:
         with open(args.pickle, "rb") as IMAPICKLEMORTY:
             messages = pickle.load(IMAPICKLEMORTY)
-    elif args.json:
-        for json_file in args.json:
-            _messages, actions = TgDumpParser(json_file)()
-            messages.update(_messages)
-    elif args.directory:
-        for directory in args.directory:
-            _messages, actions = TgDumpParser(directory)()
-            messages.update(_messages)
     else:
-        raise Exception("No data. Please specify one of: --pickle, --json, --directory")
+        for source in args.sources:
+            _messages = None
+            if os.path.isdir(source):
+                if "result.json" in os.listdir(source):
+                    _messages, _actions = TgDumpParser(os.path.join(source, "result.json"))()
+                else:
+                    _messages, _actions = TgDumpParser(source)()
+            elif os.path.isfile(source):
+                _messages, _actions = TgDumpParser(source)()
+            if _messages:
+                dumps.append(_messages)
+                _actions.extend(_actions) # this is insufficient
+            else:
+                raise Exception(f"Invalid source: {source}")
+
+    if not dumps:
+        raise Exception(f"No usable sources in {args.sources}")
+
+    dumps.sort(key=lambda x: str(dump.earliest) + str(dump.latest))
+
+    for dump in dumps:
+        messages.merge(dump)
 
     if args.write_pickle:
         with open(args.write_pickle, "wb") as IMAPICKLEMORTY:

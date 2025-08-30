@@ -46,6 +46,19 @@ class TgDump(dict):
         super().__init__(*args, **kwargs)
         self.from_cache = {}
         self.id_map = {}
+        self.earliest = 99999999999
+        self.latest = 0
+
+    def check_timestamp(self, msg):
+        if "timestamp" in msg:
+            if msg["timestamp"] < self.earliest:
+                self.earliest = msg["timestamp"]
+            if msg["timestamp"] > self.latest:
+                self.latest = msg["timestamp"]
+
+    def update_earliest_and_latest(self):
+        for msg in self:
+            self.check_timestamp(msg)
 
     def has_link(self, _id):
         if _id not in self:
@@ -96,6 +109,7 @@ class TgDump(dict):
                     else:
                         raise Exception(f"Message id {msg_id} has conflicting values for field {field}. Ours is {self[msg_id][field]}, other is {value}")
         self.normalize_from_name()
+        self.update_earliest_and_latest()
 
     def normalize_from_name(self):
         new_id_map = {}
@@ -170,6 +184,7 @@ class TgJsonParser(object):
             }
             msg["id"] = message["id"]
             msg["timestamp"] = int(message["date_unixtime"])
+            messages.check_timestamp(msg["timestamp"])
             if "from" in message:
                 msg["from_name"] = message["from"]
             if "from_id" in message:
