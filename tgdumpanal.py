@@ -128,7 +128,7 @@ def top_n(dct, n):
     Returns a sorted list of tuples of the top n entries in
     the dict, where the sorting key is the dict value.
     '''
-    sorted_list_of_tuples = sorted(dct.items(), key = lambda foo: foo[1])
+    sorted_list_of_tuples = list(filter(lambda x: x[0] != "Deleted Account", sorted(dct.items(), key = lambda foo: foo[1])))
     if n == 1:
         return [sorted_list_of_tuples[-1]]
     return sorted_list_of_tuples[-1 * n :]
@@ -146,21 +146,23 @@ def find_replied_to(messages, from_name):
                 if replied_to_msg in messages:
                     replyee = messages[replied_to_msg]["from_name"]
                     replied_tos[replyee] += 1
-                else:
-                    replied_tos["Unknown"] += 1
+                #else:
+                #    replied_tos["Unknown"] += 1
     return replied_tos
 
 def pretty_time(unixtime):
     return time.strftime('%d.%m.%Y %H:%M:%S UTC%z', time.gmtime(unixtime)),
 
+max_time = 9999999999999999999999
+min_time = -9999999999999999999999
 def tg_time_range(messages):
     msgs = iter(messages.items())
     _id, first = next(msgs)
     earliest = first["timestamp"]
     latest = first["timestamp"]
     for _id, msg in msgs:
-        earliest = min(earliest, msg["timestamp"])
-        latest = max(latest, msg["timestamp"])
+        earliest = min(earliest, msg.get("timestamp", None) or max_time)
+        latest = max(latest, msg.get("timestamp", None) or min_time)
     return (
         earliest,
         latest,
@@ -170,7 +172,7 @@ def tg_time_range(messages):
 def tg_per_day(messages_dict):
     messages = list(messages_dict.values())
     messages.sort(key = lambda x: x["timestamp"])
-    results = []
+    results = [] 
     earliest, latest = (messages[0]["timestamp"], messages[-1]["timestamp"])
     day = earliest - earliest % 86400 + 86400
     talkers = {}
@@ -396,6 +398,7 @@ def main():
             messages = pickle.load(IMAPICKLEMORTY)
     else:
         for source in args.sources:
+            print(f"processing source {source}")
             _messages = None
             if os.path.isdir(source):
                 if "result.json" in os.listdir(source):
@@ -410,17 +413,18 @@ def main():
             else:
                 raise Exception(f"Invalid source: {source}")
 
-    if not dumps:
-        raise Exception(f"No usable sources in {args.sources}")
+        if not dumps:
+            raise Exception(f"No usable sources in {args.sources}")
 
-    dumps.sort(key=lambda x: str(dump.earliest) + str(dump.latest))
+        dumps.sort(key=lambda dump: str(dump.earliest) + str(dump.latest))
 
-    for dump in dumps:
-        messages.merge(dump)
+        for dump, source in zip(dumps, args.sources):
+            print(f"merging {source}")
+            messages.merge(dump)
 
-    if args.write_pickle:
-        with open(args.write_pickle, "wb") as IMAPICKLEMORTY:
-            pickle.dump(messages, IMAPICKLEMORTY)
+        if args.write_pickle:
+            with open(args.write_pickle, "wb") as IMAPICKLEMORTY:
+                pickle.dump(messages, IMAPICKLEMORTY)
 
     if not messages:
         print("No messages")

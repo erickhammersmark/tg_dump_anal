@@ -5,7 +5,9 @@ import json
 import os
 import re
 import sys
+import time
 
+from collections import defaultdict
 from html2text import HTML2Text
 
 """
@@ -45,25 +47,34 @@ class TgDump(dict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.from_cache = {}
-        self.id_map = {}
+        self.id_map = defaultdict(list)
         self.earliest = 99999999999
         self.latest = 0
 
     def check_timestamp(self, msg):
-        if "timestamp" in msg:
-            if msg["timestamp"] < self.earliest:
-                self.earliest = msg["timestamp"]
-            if msg["timestamp"] > self.latest:
-                self.latest = msg["timestamp"]
+        try:
+            if "timestamp" in msg:
+                if msg["timestamp"] < self.earliest:
+                    self.earliest = msg["timestamp"]
+                if msg["timestamp"] > self.latest:
+                    self.latest = msg["timestamp"]
+        except Exception as e:
+            pass
+            #print("Bad timestamp in message, ignoring")
+            #print(msg)
+            #print(self.earliest)
+            #print(self.latest)
 
     def update_earliest_and_latest(self):
-        for msg in self:
+        for msg in self.values():
             self.check_timestamp(msg)
 
     def has_link(self, _id):
         if _id not in self:
             return False
         msg = self[_id]
+        if "links" not in msg:
+            return False
         return len(msg["links"]) != 0
 
     def allfrom(self, from_name):
@@ -105,36 +116,31 @@ class TgDump(dict):
                         continue
                     if field == "from_name":
                         # always take an updated from_name, this needs to be consistent for the reports
+                        if value == "Deleted Account":
+                            # unless it's not their name any more
+                            continue
                         self[msg_id]["from_name"] = value
                     else:
-                        raise Exception(f"Message id {msg_id} has conflicting values for field {field}. Ours is {self[msg_id][field]}, other is {value}")
+                        self[msg_id][field] = value
+                        #raise Exception(f"Message id {msg_id} has conflicting values for field {field}. Ours is {self[msg_id][field]}, other is {value}")
         self.normalize_from_name()
         self.update_earliest_and_latest()
 
     def normalize_from_name(self):
-        new_id_map = {}
         msg_ids = list(self.keys())
         msg_ids.sort(key=lambda x: 0 - x)
         for msg_id in msg_ids:
             msg = self[msg_id]
             if "from_id" not in msg:
                 continue
-            if msg["from_id"] not in new_id_map:
-                new_id_map[msg["from_id"]] = msg["from_name"]
-            else:
-                msg["from_name"] = new_id_map[msg["from_id"]]
-        self.id_map = new_id_map
-
-    def has_link(self, _id):
-        if _id not in self:
-            return False
-        msg = self[_id]
-        return len(msg["links"]) != 0
-
-    def allfrom(self, from_name):
-        if from_name not in self.from_cache:
-            self.from_cache[from_name] = (msg for msg in self.values() if msg["from_name"] == from_name)
-        return self.from_cache[from_name]
+            from_id = msg["from_id"]
+            names = self.id_map[from_id]
+            name = msg.get("from_name", None)
+            if name and name not in names:
+                names.append(name)
+            # walking through the messages backwards, keep the last not-sucky name
+            if names and names[0] and not self.isnull(names[0]) and names[0] != "Deleted Account":
+                msg["from_name"] = names[0]
 
 class TgJsonParser(object):
     """
@@ -183,8 +189,9 @@ class TgJsonParser(object):
                 "reply_to": ""
             }
             msg["id"] = message["id"]
-            msg["timestamp"] = int(message["date_unixtime"])
-            messages.check_timestamp(msg["timestamp"])
+            if "date_unixtime" in message:
+                msg["timestamp"] = int(message["date_unixtime"])
+                messages.check_timestamp(msg)
             if "from" in message:
                 msg["from_name"] = message["from"]
             if "from_id" in message:
@@ -233,15 +240,14 @@ class TgHtmlParser(object):
 
     def parse(self, dump_dir=None):
         dump_dir = dump_dir or self.dump_dir
-        if not dump_dir:
-            return {}
-        messages = {}
-        for filename in os.listdir(dump_dir):
-            if filename.startswith("messages") and filename.endswith(".html"):
-                with open(os.path.join(dump_dir, filename), "r") as MESSAGES:
-                    messages.update(self.parse_messages(MESSAGES.readlines()))
-        self.messages = messages
-        return messages
+        messages = TgDump()
+        if dump_dir:
+            for filename in os.listdir(dump_dir):
+                if filename.startswith("messages") and filename.endswith(".html"):
+                    with open(os.path.join(dump_dir, filename), "r") as MESSAGES:
+                        messages.update(self.parse_messages(MESSAGES.readlines()))
+            self.messages = messages
+        return (messages, [])
 
     def parse_div_line(self, line):
         if not line:
@@ -263,7 +269,7 @@ class TgHtmlParser(object):
             if "ShowMentionName" in msg["text"]:
                 matches = self.mention_re.findall(msg["text"])
                 msg["mentions"] = list(matches)
-            msg["text"] = self.href_re.sub("\g<1>", msg["text"])
+            msg["text"] = self.href_re.sub("<1>", msg["text"])
             self.html_parser.feed(msg["text"])
             try:
                 msg["text"] = self.html_parser.finish().strip()
@@ -292,6 +298,7 @@ class TgHtmlParser(object):
         # use 'target' to track what field we want to fill in with subsequent lines
         target = None
 
+        wait_for_new = True
         for line in lines:
             if "</div" in line:
                 target = None
@@ -300,7 +307,10 @@ class TgHtmlParser(object):
                 target = None
                 if div["class"].startswith("message default clearfix"):
                     # new message.  if we were building an old message, save it.
+                    wait_for_new = False
                     if msg["id"]:
+                        if msg["timestamp"] is None:
+                            msg["timestamp"] = messages[-1]["timestamp"] # HACK
                         messages[msg["id"]] = self.post_process(msg)
                     from_name = None
                     if div["class"].endswith("joined"):
@@ -316,7 +326,10 @@ class TgHtmlParser(object):
                         "media": "",
                         "reply_to": ""
                     }
-                    msg["id"] = div["id"].replace("message","")
+                    msg["id"] = int(div["id"].replace("message",""))
+                elif div["class"] == "forwarded body":
+                    target = None
+                    wait_for_new = True
                 elif div["class"] == "from_name":
                     target = "from_name"
                 elif div["class"] == "text":
@@ -324,15 +337,23 @@ class TgHtmlParser(object):
                 elif div["class"] == "pull_right date details":
                     msg["timestamp"] = div["title"]
                     try:
-                        msg["timestamp"] = time.mktime(time.strptime(msg["timestamp"], '%d.%m.%Y %H:%M:%S UTC%z'))
+                        if 'UTC' in msg["timestamp"]:
+                            msg["timestamp"] = time.mktime(time.strptime(msg["timestamp"], '%d.%m.%Y %H:%M:%S UTC%z'))
+                        else:
+                            msg["timestamp"] = time.mktime(time.strptime(msg["timestamp"], '%d.%m.%Y %H:%M:%S'))
                     except:
-                        pass
+                        msg["timestamp"] = None
                 elif div["class"] == "media_wrap clearfix":
                     target = "media"
                 elif div["class"] == "reply_to details":
                     target = "reply_to"
+            elif wait_for_new:
+                continue
             elif target is not None:
                 if target == "from_name":
+                    if "<span" in line:
+                        name, details = line.split(" ", 1)
+                        line = name
                     try:
                         msg[target] = html.unescape(line.strip())
                     except:
@@ -342,6 +363,8 @@ class TgHtmlParser(object):
                     msg[target] = msg[target] + line
 
         if msg["id"]:
+            if msg["timestamp"] is None:
+                msg["timestamp"] = messages[-1]["timestamp"] # HACK
             messages[msg["id"]] = self.post_process(msg)
         return messages
 
@@ -352,9 +375,24 @@ class TgDumpParser(object):
             self.parser = TgHtmlParser(dump)
         else:
             self.parser = TgJsonParser(dump)
+        self.messages = TgDump()
+        self.actions = []
 
     def __call__(self):
-        return self.parser()
+        self.messages, self.actions = self.parser()
+        self.sanitize_messages()
+        return (self.messages, self.actions)
+
+    def sanitize_messages(self):
+        for msg_id, msg in self.messages.items():
+            if "timestamp" not in msg or not msg["timestamp"]:
+                _id = msg_id - 1
+                while _id in self.messages:
+                    if "timestamp" in self.messages[_id] and self.messages[_id]["timestamp"]:
+                        msg["timestamp"] = self.messages[_id]["timestamp"]
+                        break
+                    _id -= 1
+
 
 if __name__ == "__main__":
     parser = TgDumpParser(sys.argv[1])
