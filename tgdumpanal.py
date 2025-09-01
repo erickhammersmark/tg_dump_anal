@@ -373,6 +373,7 @@ def parse_args():
     parser.add_argument("--not_after", default=None, help="epoch timestamp of latest desired message (or YYYY-MM-DD)", type=mk_epochtime)
     parser.add_argument("--dump", default=False, action="store_true", help="dump all messages to console")
     parser.add_argument("--dumpjson", default=False, action="store_true", help="dump messages in json format")
+    parser.add_argument("--dumpjsonl", default=False, action="store_true", help="dump messages in newline-delimited json format")
     parser.add_argument("--search", default=None, help="search regex for message dump")
     parser.add_argument("--wc", default=None, help="generate wordcloud and store in this PNG filename")
     parser.add_argument("--wc-mask", default=None, help="file containing image mask for wordcloud")
@@ -442,7 +443,7 @@ def main():
     if args.nevertalkers:
         tg_nevertalkers(messages, actions)
 
-    if args.dump:
+    if args.dump or args.dumpjson or args.dumpjsonl:
         output = list(messages.values())
         output.sort(key = lambda msg: int(msg["id"]))
         if args.search is not None:
@@ -450,6 +451,9 @@ def main():
             output = [msg for msg in output if search_re.search(str(msg))]
         if args.dumpjson:
             print(json.dumps(output))
+        elif args.dumpjsonl:
+            for message in output:
+                print(json.dumps(message))
         else:
             for msg in output:
                 print(msg)
