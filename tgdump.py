@@ -186,7 +186,7 @@ class TgJsonParser(object):
                 "links": [],
                 "mentions": [],
                 "media": "",
-                "reply_to": ""
+                "reply_to": []
             }
             msg["id"] = message["id"]
             if "date_unixtime" in message:
@@ -292,7 +292,7 @@ class TgHtmlParser(object):
             "message_links": [],
             "mentions": [],
             "media": "",
-            "reply_to": ""
+            "reply_to": []
         }
 
         # use 'target' to track what field we want to fill in with subsequent lines
@@ -324,7 +324,7 @@ class TgHtmlParser(object):
                         "message_links": [],
                         "mentions": [],
                         "media": "",
-                        "reply_to": ""
+                        "reply_to": []
                     }
                     msg["id"] = int(div["id"].replace("message",""))
                 elif div["class"] == "forwarded body":

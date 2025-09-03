@@ -397,6 +397,9 @@ def main():
     if args.pickle:
         with open(args.pickle, "rb") as IMAPICKLEMORTY:
             messages = pickle.load(IMAPICKLEMORTY)
+        for id, msg in messages.items():
+            if msg["reply_to"] == "":
+                msg["reply_to"] = []
     else:
         for source in args.sources:
             print(f"processing source {source}")
